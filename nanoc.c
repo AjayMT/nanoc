@@ -228,16 +228,16 @@ typedef enum {
   // nSTMT variants
   vDECL, vEXPR, vEMPTY, vBLOCK, vIF, vWHILE, vCONTINUE, vBREAK, vRETURN,
 
-  // nEXPR variants; TODO function calls
+  // nEXPR variants
   vIDENT, vINT_LITERAL, vCHAR_LITERAL, vSTRING_LITERAL,
   vDEREF, vADDRESSOF, vINCREMENT, vDECREMENT, vNOT,
   vADD, vSUBTRACT, vMULTIPLY, vDIVIDE, vMODULO,
   vLT, vGT, vEQUAL, vAND, vOR,
   vBIT_AND, vBIT_OR, vBIT_XOR, vBIT_NOT,
-  vASSIGN,
+  vASSIGN, vCALL,
 
   // nTYPE variants
-  vINT, vCHAR, vPTR
+  vINT, vCHAR, vVOID, vPTR
 } ast_node_variant_t;
 
 typedef struct ast_node_s {
@@ -252,7 +252,7 @@ typedef struct ast_node_s {
 ast_node_t *parse_type()
 {
   token_t tok = next_token();
-  if (tok.type != INT && tok.type != CHAR) {
+  if (tok.type != INT && tok.type != CHAR && tok.type != VOID) {
     printf("Expected type at position %u\n", tok.pos);
     exit(1);
   }
@@ -261,7 +261,8 @@ ast_node_t *parse_type()
   memset(root, 0, sizeof(ast_node_t));
   root->type = nTYPE;
   if (tok.type == INT) root->variant = vINT;
-  else root->variant = vCHAR;
+  else if (tok.type == CHAR) root->variant = vCHAR;
+  else root->variant = vVOID;
 
   tok = next_token();
   while (tok.type == ASTERISK) {
@@ -321,6 +322,28 @@ ast_node_t *parse_expr()
       printf("Expected ')' at position %u\n", tok.pos);
       exit(1);
     }
+
+  parse_call:
+    tok = next_token();
+    if (tok.type == LPAREN) {
+      ast_node_t *callee = root;
+      root = malloc(sizeof(ast_node_t));
+      memset(root, 0, sizeof(ast_node_t));
+      root->type = nEXPR;
+      root->variant = vCALL;
+      root->children = callee;
+
+      ast_node_t **current_arg = &(callee->next);
+
+      tok = next_token();
+      while (tok.type != RPAREN) {
+        buffer_token(tok);
+        *current_arg = parse_expr();
+        tok = next_token();
+        if (tok.type == COMMA) tok = next_token();
+        current_arg = &((*current_arg)->next);
+      }
+    } else buffer_token(tok);
 
   parse_binops:
     tok = next_token();
@@ -502,7 +525,7 @@ ast_node_t *parse_expr()
   if (tok.type == IDENT) {
     root->variant = vIDENT;
     root->s = tok.str;
-    goto parse_binops;
+    goto parse_call;
   }
 
   if (tok.type == BIT_AND) {
@@ -642,7 +665,7 @@ ast_node_t *parse_stmt()
     return root;
   }
 
-  if (tok.type == INT || tok.type == CHAR) {
+  if (tok.type == INT || tok.type == CHAR || tok.type == VOID) {
     buffer_token(tok);
     root->variant = vDECL;
     ast_node_t *type_node = parse_type();
@@ -655,6 +678,7 @@ ast_node_t *parse_stmt()
     return root;
   }
 
+  buffer_token(tok);
   root->variant = vEXPR;
   ast_node_t *expr_node = parse_expr();
   root->children = expr_node;
@@ -750,7 +774,8 @@ int main(int argc, char *argv[])
     if (root->type == nFUNCTION) {
       ast_node_t *child = root->children;
       if (child->variant == vINT) printf("return type int\n");
-      else printf("return type char\n");
+      else if (child->variant == vCHAR) printf("return type char\n");
+      else printf("return type void\n");
       child = child->next;
       while (child != NULL && child->type == nARGUMENT) {
         printf("argument: %s\n", child->s);
