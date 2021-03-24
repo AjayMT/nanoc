@@ -193,24 +193,15 @@ token_t next_token()
     }
     ungetc(c, input);
 
-    if (strlen("int") == buf_idx && strncmp(buf, "int", 3) == 0)
-      RET_EMPTY_TOKEN(INT);
-    if (strlen("char") == buf_idx && strncmp(buf, "char", 4) == 0)
-      RET_EMPTY_TOKEN(CHAR);
-    if (strlen("void") == buf_idx && strncmp(buf, "void", 4) == 0)
-      RET_EMPTY_TOKEN(VOID);
-    if (strlen("if") == buf_idx && strncmp(buf, "if", 2) == 0)
-      RET_EMPTY_TOKEN(IF);
-    if (strlen("else") == buf_idx && strncmp(buf, "else", 4) == 0)
-      RET_EMPTY_TOKEN(ELSE);
-    if (strlen("while") == buf_idx && strncmp(buf, "while", 5) == 0)
-      RET_EMPTY_TOKEN(WHILE);
-    if (strlen("continue") == buf_idx && strncmp(buf, "continue", 8) == 0)
-      RET_EMPTY_TOKEN(CONTINUE);
-    if (strlen("break") == buf_idx && strncmp(buf, "break", 5) == 0)
-      RET_EMPTY_TOKEN(BREAK);
-    if (strlen("return") == buf_idx && strncmp(buf, "return", 6) == 0)
-      RET_EMPTY_TOKEN(RETURN);
+    if (buf_idx == 3 && strncmp(buf, "int", 3) == 0) RET_EMPTY_TOKEN(INT);
+    if (buf_idx == 4 && strncmp(buf, "char", 4) == 0) RET_EMPTY_TOKEN(CHAR);
+    if (buf_idx == 4 && strncmp(buf, "void", 4) == 0) RET_EMPTY_TOKEN(VOID);
+    if (buf_idx == 2 && strncmp(buf, "if", 2) == 0) RET_EMPTY_TOKEN(IF);
+    if (buf_idx == 4 && strncmp(buf, "else", 4) == 0) RET_EMPTY_TOKEN(ELSE);
+    if (buf_idx == 5 && strncmp(buf, "while", 5) == 0) RET_EMPTY_TOKEN(WHILE);
+    if (buf_idx == 8 && strncmp(buf, "continue", 8) == 0) RET_EMPTY_TOKEN(CONTINUE);
+    if (buf_idx == 5 && strncmp(buf, "break", 5) == 0) RET_EMPTY_TOKEN(BREAK);
+    if (buf_idx == 6 && strncmp(buf, "return", 6) == 0) RET_EMPTY_TOKEN(RETURN);
 
     char *s = strndup(buf, buf_idx);
     return (token_t) { .type = IDENT, .str = s, .pos = ftell(input) };
@@ -688,6 +679,7 @@ ast_node_t *parse()
     ast_node_t *type_node = parse_type();
     tok = next_token();
     if (tok.type != IDENT) {
+    fail:
       printf("Malformed declaration at position %u\n", tok.pos);
       exit(1);
     }
@@ -705,7 +697,37 @@ ast_node_t *parse()
       continue;
     }
 
-    // TODO parse function declaration
+    if (tok.type != LPAREN) goto fail;
+
+    *current = malloc(sizeof(ast_node_t));
+    memset(*current, 0, sizeof(ast_node_t));
+    (*current)->type = nFUNCTION;
+    (*current)->s = name;
+    (*current)->children = type_node;
+
+    ast_node_t **current_arg = &(type_node->next);
+
+    tok = next_token();
+    while (tok.type != RPAREN) {
+      buffer_token(tok);
+      ast_node_t *arg_type_node = parse_type();
+      tok = next_token();
+      if (tok.type != IDENT) goto fail;
+      *current_arg = malloc(sizeof(ast_node_t));
+      memset(*current_arg, 0, sizeof(ast_node_t));
+      (*current_arg)->type = nARGUMENT;
+      (*current_arg)->s = tok.str;
+      (*current_arg)->children = arg_type_node;
+      current_arg = &((*current_arg)->next);
+
+      tok = next_token();
+      if (tok.type == COMMA) tok = next_token();
+    }
+
+    *current_arg = parse_stmt();
+    if ((*current_arg)->variant != vBLOCK) goto fail;
+
+    current = &((*current)->next);
     tok = next_token();
   }
 
@@ -725,6 +747,16 @@ int main(int argc, char *argv[])
   ast_node_t *root = parse();
   while (root != NULL) {
     printf("declaration: %s\n", root->s);
+    if (root->type == nFUNCTION) {
+      ast_node_t *child = root->children;
+      if (child->variant == vINT) printf("return type int\n");
+      else printf("return type char\n");
+      child = child->next;
+      while (child != NULL && child->type == nARGUMENT) {
+        printf("argument: %s\n", child->s);
+        child = child->next;
+      }
+    }
     root = root->next;
   }
 
