@@ -749,13 +749,188 @@ ast_node_t *parse()
     }
 
     *current_arg = parse_stmt();
-    if ((*current_arg)->variant != vBLOCK) goto fail;
+    if ((*current_arg)->variant != vBLOCK && (*current_arg)->variant != vEMPTY)
+      goto fail;
 
     current = &((*current)->next);
     tok = next_token();
   }
 
   return root;
+}
+
+uint32_t hash(char *str)
+{
+  uint32_t h = 5381;
+  int c;
+
+  while ((c = *str++))
+    h = (h << 5) + h + c;
+
+  return h;
+}
+
+typedef enum {
+  tINT, tCHAR, tVOID, tINT_PTR, tCHAR_PTR, tVOID_PTR, tPTR_PTR
+} symbol_type_t;
+
+typedef enum {
+  lTEXT, lDATA, lSTACK
+} loc_type_t;
+
+typedef struct symbol_s {
+  char *name;
+  symbol_type_t type;
+  uint32_t loc;
+  loc_type_t loc_type;
+  struct symbol_s *child;
+  struct symbol_s *parent;
+} symbol_t;
+
+uint32_t *text = NULL;
+uint32_t text_loc = 0;
+uint32_t text_cap = 0;
+uint32_t *data = NULL;
+uint32_t data_loc = 0;
+uint32_t data_cap = 0;
+
+// this is arbitrary
+#define SYMTAB_SIZE 256
+
+symbol_t *root_symtab = NULL;
+uint32_t block_id = 0;
+
+void symtab_insert(symbol_t *tab, symbol_t sym)
+{
+  uint32_t idx = hash(sym.name) % SYMTAB_SIZE;
+  uint32_t i = idx;
+  do {
+    if (tab[i].name == NULL) {
+      sym.parent = tab;
+      tab[i] = sym;
+      return;
+    }
+    if (strcmp(tab[i].name, sym.name) == 0) {
+      printf("Duplicate symbol: %s\n", sym.name);
+      exit(1);
+    }
+    ++i;
+  } while (i != idx);
+  printf("Too many (>256) symbols\n");
+  exit(1);
+}
+
+symbol_type_t symbol_type_of_node_type(ast_node_t *v)
+{
+  switch (v->variant) {
+  case vINT: return tINT;
+  case vCHAR: return tCHAR;
+  case vVOID: return tVOID;
+  case vPTR:
+    switch (v->children->variant) {
+    case vINT: return tINT_PTR;
+    case vCHAR: return tCHAR_PTR;
+    case vVOID: return tVOID_PTR;
+    case vPTR: return tPTR_PTR;
+    }
+  }
+
+  return 0;
+}
+
+uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
+{
+  if (root->type != nSTMT && root->type != nFUNCTION) {
+    printf("Failed to construct symbol table\n");
+    exit(1);
+  }
+
+  if (root->type == nFUNCTION) {
+    symbol_t sym;
+    memset(&sym, 0, sizeof(symbol_t));
+    sym.name = root->s;
+    ast_node_t *type_node = root->children;
+    sym.type = symbol_type_of_node_type(type_node);
+    sym.loc = text_loc;
+    sym.loc_type = lTEXT;
+    sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
+    memset(sym.child, 0, sizeof(symbol_t) * SYMTAB_SIZE);
+
+    ast_node_t *argument_nodes = type_node->next;
+    ast_node_t *current_arg = argument_nodes;
+    uint32_t arg_offset = 8; // 4 bytes for return address and 4 for old ebp
+    while (current_arg->type == nARGUMENT) {
+      symbol_t arg_sym;
+      arg_sym.name = current_arg->s;
+      arg_sym.loc = arg_offset;
+      arg_sym.loc_type = lSTACK;
+      arg_sym.type = symbol_type_of_node_type(current_arg->children);
+      arg_sym.child = NULL;
+      symtab_insert(sym.child, arg_sym);
+      if (arg_sym.type == tCHAR) arg_offset += 1;
+      else arg_offset += 4;
+      current_arg = current_arg->next;
+    }
+
+    uint32_t stack_size = construct_symtab(current_arg, sym.child, 0);
+    symtab_insert(out, sym);
+    return stack_size;
+  }
+
+  if (root->variant == vDECL) {
+    symbol_t sym;
+    sym.name = root->s;
+    if (out == root_symtab) {
+      sym.loc = data_loc;
+      sym.loc_type = lDATA;
+    } else {
+      sym.loc = loc;
+      sym.loc_type = lSTACK;
+    }
+    sym.type = symbol_type_of_node_type(root->children);
+    sym.child = NULL;
+    symtab_insert(out, sym);
+    if (sym.type == tCHAR) return 1;
+    return 4;
+  }
+
+  if (root->variant == vBLOCK) {
+    if (root->children == NULL) return 0;
+
+    symbol_t sym;
+    sym.name = malloc(2);
+    sym.name[0] = block_id % 256; ++block_id;
+    sym.name[1] = 0;
+    sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
+    sym.loc = loc;
+    sym.loc_type = lSTACK;
+
+    ast_node_t *current_child = root->children;
+    uint32_t size = 0;
+    while (current_child != NULL) {
+      size += construct_symtab(current_child, sym.child, loc + size);
+      current_child = current_child->next;
+    }
+
+    symtab_insert(out, sym);
+    return size;
+  }
+
+  if (root->variant == vWHILE)
+    return construct_symtab(root->children->next, out, loc);
+
+  if (root->variant == vIF) {
+    uint32_t s = construct_symtab(root->children->next, out, loc);
+    return construct_symtab(root->children->next->next, out, loc + s);
+  }
+
+  return 0;
+}
+
+void codegen(ast_node_t *ast)
+{
+  // TODO
+  construct_symtab(ast, root_symtab, 0);
 }
 
 int main(int argc, char *argv[])
@@ -768,21 +943,28 @@ int main(int argc, char *argv[])
   char *filename = argv[1];
   input = fopen(filename, "r");
 
+  root_symtab = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
+  memset(root_symtab, 0, sizeof(symbol_t) * SYMTAB_SIZE);
+
   ast_node_t *root = parse();
-  while (root != NULL) {
-    printf("declaration: %s\n", root->s);
-    if (root->type == nFUNCTION) {
-      ast_node_t *child = root->children;
-      if (child->variant == vINT) printf("return type int\n");
-      else if (child->variant == vCHAR) printf("return type char\n");
-      else printf("return type void\n");
-      child = child->next;
-      while (child != NULL && child->type == nARGUMENT) {
-        printf("argument: %s\n", child->s);
-        child = child->next;
+  codegen(root);
+
+  // testing code
+  for (uint32_t i = 0; i < SYMTAB_SIZE; ++i) {
+    if (root_symtab[i].name == NULL) continue;
+
+    printf("symbol %s\n", root_symtab[i].name);
+    if (root_symtab[i].child != NULL) {
+      symbol_t *child = NULL;
+      for (uint32_t k = 0; k < SYMTAB_SIZE; ++k)
+        if (root_symtab[i].child[k].child != NULL)
+          child = root_symtab[i].child[k].child;
+      for (uint32_t j = 0; j < SYMTAB_SIZE; ++j) {
+        if (child[j].name == NULL) continue;
+
+        printf("child symbol %s loc %d\n", child[j].name, child[j].loc);
       }
     }
-    root = root->next;
   }
 
   return 0;
