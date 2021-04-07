@@ -193,15 +193,15 @@ token_t next_token()
     }
     ungetc(c, input);
 
-    if (buf_idx == 3 && strncmp(buf, "int", 3) == 0) RET_EMPTY_TOKEN(INT);
-    if (buf_idx == 4 && strncmp(buf, "char", 4) == 0) RET_EMPTY_TOKEN(CHAR);
-    if (buf_idx == 4 && strncmp(buf, "void", 4) == 0) RET_EMPTY_TOKEN(VOID);
-    if (buf_idx == 2 && strncmp(buf, "if", 2) == 0) RET_EMPTY_TOKEN(IF);
-    if (buf_idx == 4 && strncmp(buf, "else", 4) == 0) RET_EMPTY_TOKEN(ELSE);
-    if (buf_idx == 5 && strncmp(buf, "while", 5) == 0) RET_EMPTY_TOKEN(WHILE);
-    if (buf_idx == 8 && strncmp(buf, "continue", 8) == 0) RET_EMPTY_TOKEN(CONTINUE);
-    if (buf_idx == 5 && strncmp(buf, "break", 5) == 0) RET_EMPTY_TOKEN(BREAK);
-    if (buf_idx == 6 && strncmp(buf, "return", 6) == 0) RET_EMPTY_TOKEN(RETURN);
+    if (strcmp(buf, "int") == 0) RET_EMPTY_TOKEN(INT);
+    if (strcmp(buf, "char") == 0) RET_EMPTY_TOKEN(CHAR);
+    if (strcmp(buf, "void") == 0) RET_EMPTY_TOKEN(VOID);
+    if (strcmp(buf, "if") == 0) RET_EMPTY_TOKEN(IF);
+    if (strcmp(buf, "else") == 0) RET_EMPTY_TOKEN(ELSE);
+    if (strcmp(buf, "while") == 0) RET_EMPTY_TOKEN(WHILE);
+    if (strcmp(buf, "continue") == 0) RET_EMPTY_TOKEN(CONTINUE);
+    if (strcmp(buf, "break") == 0) RET_EMPTY_TOKEN(BREAK);
+    if (strcmp(buf, "return") == 0) RET_EMPTY_TOKEN(RETURN);
 
     char *s = strndup(buf, buf_idx);
     return (token_t) { .type = IDENT, .str = s, .pos = ftell(input) };
@@ -608,6 +608,18 @@ ast_node_t *parse_stmt()
     tok = next_token();
     if (tok.type != RPAREN) goto fail;
     ast_node_t *if_stmt = parse_stmt();
+
+    // if the statement is not a block, wrap it in a block
+    // simplifies symtab construction and codegen
+    if (if_stmt->type != vBLOCK) {
+      ast_node_t *block = malloc(sizeof(ast_node_t));
+      memset(block, 0, sizeof(ast_node_t));
+      block->type = nSTMT;
+      block->variant = vBLOCK;
+      block->children = if_stmt;
+      if_stmt = block;
+    }
+
     tok = next_token();
     ast_node_t *else_stmt;
     if (tok.type == ELSE) else_stmt = parse_stmt();
@@ -616,7 +628,16 @@ ast_node_t *parse_stmt()
       else_stmt = malloc(sizeof(ast_node_t));
       memset(else_stmt, 0, sizeof(ast_node_t));
       else_stmt->type = nSTMT;
-      else_stmt->variant = vEMPTY;
+      else_stmt->variant = vBLOCK;
+    }
+
+    if (else_stmt->type != vBLOCK) {
+      ast_node_t *block = malloc(sizeof(ast_node_t));
+      memset(block, 0, sizeof(ast_node_t));
+      block->type = nSTMT;
+      block->variant = vBLOCK;
+      block->children = else_stmt;
+      else_stmt = block;
     }
 
     cond_expr->next = if_stmt;
@@ -633,6 +654,15 @@ ast_node_t *parse_stmt()
     tok = next_token();
     if (tok.type != RPAREN) goto fail;
     ast_node_t *while_stmt = parse_stmt();
+
+    if (while_stmt->type != vBLOCK) {
+      ast_node_t *block = malloc(sizeof(ast_node_t));
+      memset(block, 0, sizeof(ast_node_t));
+      block->type = nSTMT;
+      block->variant = vBLOCK;
+      block->children = while_stmt;
+      while_stmt = block;
+    }
 
     cond_expr->next = while_stmt;
     root->children = cond_expr;
@@ -798,7 +828,6 @@ uint32_t data_cap = 0;
 #define SYMTAB_SIZE 256
 
 symbol_t *root_symtab = NULL;
-uint32_t block_id = 0;
 
 void symtab_insert(symbol_t *tab, symbol_t sym)
 {
@@ -832,13 +861,17 @@ symbol_type_t symbol_type_of_node_type(ast_node_t *v)
     case vCHAR: return tCHAR_PTR;
     case vVOID: return tVOID_PTR;
     case vPTR: return tPTR_PTR;
+    default: ;
     }
+  default: ;
   }
 
   return 0;
 }
 
-uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
+uint32_t construct_symtab(
+  ast_node_t *root, symbol_t *out, uint32_t loc, uint32_t block_id
+  )
 {
   if (root->type != nSTMT && root->type != nFUNCTION) {
     printf("Failed to construct symbol table\n");
@@ -872,7 +905,7 @@ uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
       current_arg = current_arg->next;
     }
 
-    uint32_t stack_size = construct_symtab(current_arg, sym.child, 0);
+    uint32_t stack_size = construct_symtab(current_arg, sym.child, 0, 0);
     symtab_insert(out, sym);
     return stack_size;
   }
@@ -880,18 +913,19 @@ uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
   if (root->variant == vDECL) {
     symbol_t sym;
     sym.name = root->s;
+    sym.type = symbol_type_of_node_type(root->children);
+    uint32_t size = 4;
+    if (sym.type == tCHAR) size = 1;
     if (out == root_symtab) {
       sym.loc = data_loc;
       sym.loc_type = lDATA;
     } else {
-      sym.loc = loc;
+      sym.loc = -(loc + size);
       sym.loc_type = lSTACK;
     }
-    sym.type = symbol_type_of_node_type(root->children);
     sym.child = NULL;
     symtab_insert(out, sym);
-    if (sym.type == tCHAR) return 1;
-    return 4;
+    return size;
   }
 
   if (root->variant == vBLOCK) {
@@ -899,29 +933,35 @@ uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
 
     symbol_t sym;
     sym.name = malloc(2);
-    sym.name[0] = block_id % 256; ++block_id;
+    sym.name[0] = block_id % 256;
     sym.name[1] = 0;
     sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
-    sym.loc = loc;
     sym.loc_type = lSTACK;
 
     ast_node_t *current_child = root->children;
     uint32_t size = 0;
+    uint32_t bid = 0;
     while (current_child != NULL) {
-      size += construct_symtab(current_child, sym.child, loc + size);
+      size += construct_symtab(current_child, sym.child, loc + size, bid);
+      if (current_child->variant == vBLOCK || current_child->variant == vWHILE)
+        ++bid;
+      if (current_child->variant == vIF) bid += 2;
       current_child = current_child->next;
     }
 
+    sym.loc = -(loc + size); // TODO make this the text offset of the block?
     symtab_insert(out, sym);
     return size;
   }
 
   if (root->variant == vWHILE)
-    return construct_symtab(root->children->next, out, loc);
+    return construct_symtab(root->children->next, out, loc, block_id);
 
   if (root->variant == vIF) {
-    uint32_t s = construct_symtab(root->children->next, out, loc);
-    return construct_symtab(root->children->next->next, out, loc + s);
+    uint32_t s = construct_symtab(root->children->next, out, loc, block_id);
+    return s + construct_symtab(
+      root->children->next->next, out, loc + s, block_id + 1
+      );
   }
 
   return 0;
@@ -930,7 +970,7 @@ uint32_t construct_symtab(ast_node_t *root, symbol_t *out, uint32_t loc)
 void codegen(ast_node_t *ast)
 {
   // TODO
-  construct_symtab(ast, root_symtab, 0);
+  construct_symtab(ast, root_symtab, 0, 0);
 }
 
 int main(int argc, char *argv[])
@@ -962,6 +1002,7 @@ int main(int argc, char *argv[])
       for (uint32_t j = 0; j < SYMTAB_SIZE; ++j) {
         if (child[j].name == NULL) continue;
 
+        if (child[j].name[0] < 'A') child[j].name[0] += 'A';
         printf("child symbol %s loc %d\n", child[j].name, child[j].loc);
       }
     }
