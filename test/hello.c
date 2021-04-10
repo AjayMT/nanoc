@@ -1,4 +1,5 @@
-int main(int argc, char **argv)
+
+void _start()
 {
   int a;
   int b;
@@ -19,11 +20,9 @@ int main(int argc, char **argv)
     char bar;
   }
 
-  while (d < e) int three;
-
   while (a > b) { char q; }
 
   a + b;
   c - c;
-  return 0;
+  123;
 }

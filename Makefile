@@ -3,4 +3,4 @@ nanoc: nanoc.c
  
 .PHONY: clean
 clean:
-	rm -fr nanoc
+	rm -fr nanoc a.out

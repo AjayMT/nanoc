@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <ctype.h>
+#include "elf.h"
 
 FILE *input = NULL;
 
@@ -186,7 +187,7 @@ token_t next_token()
     return (token_t) { .type = INT_LITERAL, .str = s, .pos = ftell(input) };
   }
 
-  if (isalpha(c)) {
+  if (isalpha(c) || c == '_') {
     while (isalnum(c) || c == '_') {
       buf[buf_idx] = c; ++buf_idx;
       c = getc(input);
@@ -817,12 +818,18 @@ typedef struct symbol_s {
   struct symbol_s *parent;
 } symbol_t;
 
-uint32_t *text = NULL;
+// these numbers are completely arbitrary
+#define DATA_START 0x3000
+#define TEXT_START 0x4000
+
+uint8_t *text = NULL;
 uint32_t text_loc = 0;
 uint32_t text_cap = 0;
-uint32_t *data = NULL;
+
+// arbitrary data limit
+#define DATA_CAP 0x1000
+uint8_t data[DATA_CAP];
 uint32_t data_loc = 0;
-uint32_t data_cap = 0;
 
 // this is arbitrary
 #define SYMTAB_SIZE 256
@@ -847,6 +854,21 @@ void symtab_insert(symbol_t *tab, symbol_t sym)
   } while (i != idx);
   printf("Too many (>256) symbols\n");
   exit(1);
+}
+
+symbol_t *symtab_get(symbol_t *tab, char *name)
+{
+  if (tab == NULL) return NULL;
+  uint32_t idx = hash(name) % SYMTAB_SIZE;
+  uint32_t i = idx;
+  do {
+    if (tab[i].name == NULL) return symtab_get(tab->parent, name);
+    if (strcmp(tab[i].name, name) == 0)
+      return &(tab[i]);
+    ++i;
+  } while (i != idx);
+
+  return symtab_get(tab->parent, name);
 }
 
 symbol_type_t symbol_type_of_node_type(ast_node_t *v)
@@ -967,10 +989,108 @@ uint32_t construct_symtab(
   return 0;
 }
 
+void write_text(uint8_t *b, uint32_t n) {
+  if (text == NULL || text_loc + n >= text_cap) {
+    uint32_t size = text_cap ? (2 * text_cap) : 256;
+    text = realloc(text, size);
+    text_cap = size;
+  }
+  memcpy(text + text_loc, b, n);
+  text_loc += n;
+}
+
+symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
+{
+  if (expr->variant == vINT_LITERAL || expr->variant == vCHAR_LITERAL) {
+    // for int literal:
+    //   movl <imm>, %eax
+    // for char literal:
+    //   movb <imm>, %al
+
+    uint8_t tmp = 0xa0;
+    if (expr->variant == vINT_LITERAL) tmp = 0xa1;
+    write_text(&tmp, 1);
+    uint32_t imm = expr->i;
+    for (uint32_t i = 0; i < 4; ++i) {
+      uint8_t tmp = imm & 0xff;
+      write_text(&tmp, 1);
+      imm >>= 8;
+    }
+    if (expr->variant == vINT_LITERAL) return tINT;
+    return tCHAR;
+  }
+
+  if (expr->variant == vIDENT) {
+
+  }
+
+  if (expr->variant == vSTRING_LITERAL) {
+
+  }
+
+  // TODO
+  return tINT;
+}
+
 void codegen(ast_node_t *ast)
 {
-  // TODO
   construct_symtab(ast, root_symtab, 0, 0);
+  // TODO
+  ast_node_t *current_child = ast->children;
+  while (current_child->type != nSTMT || current_child->variant != vBLOCK)
+    current_child = current_child->next;
+  current_child = current_child->children;
+  while (current_child != NULL) {
+    if (current_child->type == nSTMT && current_child->variant == vEXPR) {
+      codegen_expr(current_child->children, root_symtab);
+    }
+    current_child = current_child->next;
+  }
+}
+
+void write_elf(FILE *out)
+{
+  uint32_t entry = TEXT_START;
+  symbol_t *start = symtab_get(root_symtab, "_start");
+  if (start != NULL) entry = TEXT_START + start->loc;
+  else printf("Cannot find entry symbol _start; defaulting to %#x\n", entry);
+
+  Elf32_Header ehdr;
+  memset(&ehdr, 0, sizeof(ehdr));
+  ehdr.e_ident[0] = ELFMAG0; ehdr.e_ident[1] = ELFMAG1;
+  ehdr.e_ident[2] = ELFMAG2; ehdr.e_ident[3] = ELFMAG3;
+  ehdr.e_ident[4] = 1; ehdr.e_ident[5] = 1; ehdr.e_ident[6] = 1;
+  ehdr.e_type = ET_EXEC;
+  ehdr.e_machine = 3;
+  ehdr.e_version = 1;
+  ehdr.e_phnum = 2;
+  ehdr.e_phentsize = sizeof(Elf32_Phdr);
+  ehdr.e_phoff = sizeof(ehdr);
+  ehdr.e_ehsize = sizeof(ehdr);
+  ehdr.e_entry = entry;
+
+  Elf32_Phdr text_hdr;
+  memset(&text_hdr, 0, sizeof(text_hdr));
+  text_hdr.p_type = PT_LOAD;
+  text_hdr.p_offset = sizeof(ehdr) + (2*sizeof(Elf32_Phdr)) + data_loc;
+  text_hdr.p_vaddr = 0; // TODO text start vaddr
+  text_hdr.p_memsz = text_loc;
+  text_hdr.p_filesz = text_loc;
+  text_hdr.p_flags |= PF_X;
+
+  Elf32_Phdr data_hdr;
+  memset(&data_hdr, 0, sizeof(data_hdr));
+  data_hdr.p_type = PT_LOAD;
+  data_hdr.p_offset = sizeof(ehdr) + (2*sizeof(Elf32_Phdr));
+  data_hdr.p_vaddr = 0; // TODO data start vaddr
+  data_hdr.p_memsz = data_loc;
+  data_hdr.p_filesz = data_loc;
+
+  fwrite(&ehdr, sizeof(ehdr), 1, out);
+  fwrite(&data_hdr, sizeof(data_hdr), 1, out);
+  fwrite(&text_hdr, sizeof(text_hdr), 1, out);
+  fwrite(data, data_loc, 1, out);
+  fwrite(text, text_loc, 1, out);
 }
 
 int main(int argc, char *argv[])
@@ -990,23 +1110,26 @@ int main(int argc, char *argv[])
   codegen(root);
 
   // testing code
-  for (uint32_t i = 0; i < SYMTAB_SIZE; ++i) {
-    if (root_symtab[i].name == NULL) continue;
+  /* for (uint32_t i = 0; i < SYMTAB_SIZE; ++i) { */
+  /*   if (root_symtab[i].name == NULL) continue; */
 
-    printf("symbol %s\n", root_symtab[i].name);
-    if (root_symtab[i].child != NULL) {
-      symbol_t *child = NULL;
-      for (uint32_t k = 0; k < SYMTAB_SIZE; ++k)
-        if (root_symtab[i].child[k].child != NULL)
-          child = root_symtab[i].child[k].child;
-      for (uint32_t j = 0; j < SYMTAB_SIZE; ++j) {
-        if (child[j].name == NULL) continue;
+  /*   printf("symbol %s\n", root_symtab[i].name); */
+  /*   if (root_symtab[i].child != NULL) { */
+  /*     symbol_t *child = NULL; */
+  /*     for (uint32_t k = 0; k < SYMTAB_SIZE; ++k) */
+  /*       if (root_symtab[i].child[k].child != NULL) */
+  /*         child = root_symtab[i].child[k].child; */
+  /*     for (uint32_t j = 0; j < SYMTAB_SIZE; ++j) { */
+  /*       if (child[j].name == NULL) continue; */
 
-        if (child[j].name[0] < 'A') child[j].name[0] += 'A';
-        printf("child symbol %s loc %d\n", child[j].name, child[j].loc);
-      }
-    }
-  }
+  /*       if (child[j].name[0] < 'A') child[j].name[0] += 'A'; */
+  /*       printf("child symbol %s loc %d\n", child[j].name, child[j].loc); */
+  /*     } */
+  /*   } */
+  /* } */
+
+  FILE *out = fopen("a.out", "w");
+  write_elf(out);
 
   return 0;
 }
