@@ -286,15 +286,13 @@ void check_lval(ast_node_t *root, uint32_t pos)
     printf("Invalid lvalue at position %u\n", pos);
     exit(1);
   }
-  if (root->type == nEXPR && root->variant == vIDENT)
-    return;
-  if (root->type == nEXPR && root->variant == vDEREF) {
-    check_lval(root->children, pos);
-    return;
+  if (
+    root->type != nEXPR
+    || (root->variant != vIDENT && root->variant != vDEREF)
+    ) {
+    printf("Invalid lvalue at position %u\n", pos);
+    exit(1);
   }
-
-  printf("Invalid lvalue at position %u\n", pos);
-  exit(1);
 }
 
 ast_node_t *parse_expr()
@@ -836,21 +834,20 @@ uint32_t data_loc = 0;
 
 symbol_t *root_symtab = NULL;
 
-void symtab_insert(symbol_t *tab, symbol_t sym)
+uint8_t symtab_insert(symbol_t *tab, symbol_t sym)
 {
   uint32_t idx = hash(sym.name) % SYMTAB_SIZE;
   uint32_t i = idx;
   do {
     if (tab[i].name == NULL) {
-      sym.parent = tab;
       tab[i] = sym;
-      return;
+      return 0;
     }
     if (strcmp(tab[i].name, sym.name) == 0) {
-      printf("Duplicate symbol: %s\n", sym.name);
-      exit(1);
+      tab[i] = sym;
+      return 1;
     }
-    ++i;
+    i = (i + 1) % SYMTAB_SIZE;
   } while (i != idx);
   printf("Too many (>256) symbols\n");
   exit(1);
@@ -860,15 +857,16 @@ symbol_t *symtab_get(symbol_t *tab, char *name)
 {
   if (tab == NULL) return NULL;
   uint32_t idx = hash(name) % SYMTAB_SIZE;
+  symbol_t *parent = NULL;
   uint32_t i = idx;
   do {
-    if (tab[i].name == NULL) return symtab_get(tab->parent, name);
-    if (strcmp(tab[i].name, name) == 0)
-      return &(tab[i]);
-    ++i;
+    if (tab[i].name == NULL) { i = (i + 1) % SYMTAB_SIZE; continue; }
+    else if (tab[i].parent != NULL) parent = tab[i].parent;
+    if (strcmp(tab[i].name, name) == 0) return &(tab[i]);
+    i = (i + 1) % SYMTAB_SIZE;
   } while (i != idx);
 
-  return symtab_get(tab->parent, name);
+  return symtab_get(parent, name);
 }
 
 symbol_type_t symbol_type_of_node_type(ast_node_t *v)
@@ -892,7 +890,8 @@ symbol_type_t symbol_type_of_node_type(ast_node_t *v)
 }
 
 uint32_t construct_symtab(
-  ast_node_t *root, symbol_t *out, uint32_t loc, uint32_t block_id
+  ast_node_t *root, symbol_t *out, symbol_t *parent,
+  uint32_t loc, uint32_t block_id
   )
 {
   if (root->type != nSTMT && root->type != nFUNCTION) {
@@ -903,6 +902,7 @@ uint32_t construct_symtab(
   if (root->type == nFUNCTION) {
     symbol_t sym;
     memset(&sym, 0, sizeof(symbol_t));
+    sym.parent = parent;
     sym.name = root->s;
     ast_node_t *type_node = root->children;
     sym.type = symbol_type_of_node_type(type_node);
@@ -921,13 +921,14 @@ uint32_t construct_symtab(
       arg_sym.loc_type = lSTACK;
       arg_sym.type = symbol_type_of_node_type(current_arg->children);
       arg_sym.child = NULL;
+      arg_sym.parent = out;
       symtab_insert(sym.child, arg_sym);
       if (arg_sym.type == tCHAR) arg_offset += 1;
       else arg_offset += 4;
       current_arg = current_arg->next;
     }
 
-    uint32_t stack_size = construct_symtab(current_arg, sym.child, 0, 0);
+    uint32_t stack_size = construct_symtab(current_arg, sym.child, out, 0, 0);
     symtab_insert(out, sym);
     return stack_size;
   }
@@ -946,6 +947,7 @@ uint32_t construct_symtab(
       sym.loc_type = lSTACK;
     }
     sym.child = NULL;
+    sym.parent = parent;
     symtab_insert(out, sym);
     return size;
   }
@@ -958,13 +960,14 @@ uint32_t construct_symtab(
     sym.name[0] = block_id % 256;
     sym.name[1] = 0;
     sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
+    sym.parent = parent;
     sym.loc_type = lSTACK;
 
     ast_node_t *current_child = root->children;
     uint32_t size = 0;
     uint32_t bid = 0;
     while (current_child != NULL) {
-      size += construct_symtab(current_child, sym.child, loc + size, bid);
+      size += construct_symtab(current_child, sym.child, out, loc + size, bid);
       if (current_child->variant == vBLOCK || current_child->variant == vWHILE)
         ++bid;
       if (current_child->variant == vIF) bid += 2;
@@ -977,12 +980,12 @@ uint32_t construct_symtab(
   }
 
   if (root->variant == vWHILE)
-    return construct_symtab(root->children->next, out, loc, block_id);
+    return construct_symtab(root->children->next, out, parent, loc, block_id);
 
   if (root->variant == vIF) {
-    uint32_t s = construct_symtab(root->children->next, out, loc, block_id);
+    uint32_t s = construct_symtab(root->children->next, out, parent, loc, block_id);
     return s + construct_symtab(
-      root->children->next->next, out, loc + s, block_id + 1
+      root->children->next->next, out, parent, loc + s, block_id + 1
       );
   }
 
@@ -1021,11 +1024,167 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
   }
 
   if (expr->variant == vIDENT) {
+    symbol_t *sym = symtab_get(symtab, expr->s);
+    if (sym == NULL) {
+      // TODO relocation
+      printf("undefined symbol %s, table %p\n", expr->s, symtab);
+      exit(1);
+    }
+    if (sym->loc_type == lSTACK) {
+      // movl x(%ebp), %eax
+      uint8_t tmp[3] = { 0x8b, 0x45, sym->loc };
+      if (sym->type == tCHAR) tmp[0] = 0x8a;
+      write_text(tmp, 3);
+      return sym->type;
+    }
 
+    // movl addr, %eax
+    uint32_t addr = DATA_START + sym->loc;
+    if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+    uint8_t tmp = 0xa1;
+    write_text(&tmp, 1);
+    for (uint32_t i = 0; i < 4; ++i) {
+      uint8_t tmp = addr & 0xff;
+      write_text(&tmp, 1);
+      addr >>= 8;
+    }
+
+    // assume all symbols in .text are function pointers
+    // so do not dereference
+    if (sym->loc_type == lTEXT) return sym->type;
+
+    // for int:
+    //   movl (%eax), %eax
+    // for char:
+    //   movb (%eax), %al
+    uint8_t tmp2[2] = { 0x8b, 0 };
+    if (sym->type == tCHAR) tmp2[0] = 0x8a;
+    write_text(tmp2, 2);
+    return sym->type;
   }
 
   if (expr->variant == vSTRING_LITERAL) {
+    // write to data section
+    uint32_t addr = DATA_START + data_loc;
+    uint32_t len = strlen(expr->s);
+    memcpy(data + data_loc, expr->s, len + 1);
+    data_loc += len + 1;
 
+    // movl addr, %eax
+    uint8_t tmp = 0xa1;
+    write_text(&tmp, 1);
+    for (uint32_t i = 0; i < 4; ++i) {
+      uint8_t tmp = addr & 0xff;
+      write_text(&tmp, 1);
+      addr >>= 8;
+    }
+
+    return tCHAR_PTR;
+  }
+
+  if (expr->variant == vDEREF) {
+    // for now, we do not bother returning the correct expression type
+    // for more than one level of indirection because nanoc treats all pointer
+    // arithmetic as being performed on char* / int
+
+    // for int:
+    //   movl (%eax), %eax
+    // for char:
+    //   movb (%eax), %al
+    symbol_type_t ptr_type = codegen_expr(expr->children, symtab);
+    uint8_t tmp2[2] = { 0x8b, 0 };
+    if (ptr_type == tCHAR_PTR) tmp2[0] = 0x8a;
+    write_text(tmp2, 2);
+    if (ptr_type == tCHAR_PTR) return tCHAR;
+    return tINT;
+  }
+
+  if (expr->variant == vADDRESSOF) {
+    ast_node_t *child = expr->children;
+    if (child->variant != vDEREF && child->variant != vIDENT) {
+      printf("Invalid operand for 'address of' operator\n");
+      exit(1);
+    }
+    if (child->variant == vDEREF)
+      return codegen_expr(child->children, symtab);
+
+    symbol_t *sym = symtab_get(symtab, child->s);
+    if (sym == NULL) {
+      // TODO relocation
+      printf("undefined symbol %s, table %p\n", expr->s, symtab);
+      exit(1);
+    }
+
+    if (sym->loc_type == lSTACK) {
+      // movl %ebp, %eax
+      uint8_t tmp[2] = { 0x89, 0xe8 };
+      write_text(tmp, 2);
+
+      // addl offset, %eax
+      tmp[0] = 0x03; tmp[1] = 0x05;
+      write_text(tmp, 2);
+      uint32_t off = sym->loc;
+      for (uint32_t i = 0; i < 4; ++i) {
+        uint8_t tmp = off & 0xff;
+        write_text(&tmp, 1);
+        off >>= 8;
+      }
+      switch (sym->type) {
+      case tINT: return tINT_PTR;
+      case tCHAR: return tCHAR_PTR;
+      case tVOID: return tVOID_PTR;
+      default: return tPTR_PTR;
+      }
+    }
+
+    // movl addr, %eax
+    uint32_t addr = DATA_START + sym->loc;
+    if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+    uint8_t tmp = 0xa1;
+    write_text(&tmp, 1);
+    for (uint32_t i = 0; i < 4; ++i) {
+      uint8_t tmp = addr & 0xff;
+      write_text(&tmp, 1);
+      addr >>= 8;
+    }
+
+    if (sym->loc_type == lTEXT) return sym->type;
+    switch (sym->type) {
+    case tINT: return tINT_PTR;
+    case tCHAR: return tCHAR_PTR;
+    case tVOID: return tVOID_PTR;
+    default: return tPTR_PTR;
+    }
+  }
+
+  if (expr->variant == vINCREMENT || expr->variant == vDECREMENT) {
+    // TODO actually write value
+    symbol_type_t child_type = codegen_expr(expr->children, symtab);
+    uint8_t tmp[2] = { 0x40, 0 };
+    if (expr->variant == vINCREMENT && child_type != tCHAR)
+      write_text(tmp, 1);                               // incl %eax
+    else if (expr->variant == vDECREMENT && child_type != tCHAR) {
+      tmp[0] = 0x48; write_text(tmp, 1);                // decl %eax
+    } else if (expr->variant == vINCREMENT && child_type == tCHAR) {
+      tmp[0] = 0xfe; tmp[1] = 0xc0; write_text(tmp, 2); // incb %al
+    } else {
+      tmp[0] = 0xfe; tmp[1] = 0xc8; write_text(tmp, 2);   // decb %al
+    }
+    return child_type;
+  }
+
+  if (expr->variant == vNOT) {
+    symbol_type_t child_type = codegen_expr(expr->children, symtab);
+
+    // xorl %ecx, %ecx
+    // test %eax, %eax
+    // sete %cl
+    // movl %ecx, %eax
+    uint8_t tmp[9] = { 0x31, 0xc9, 0x85, 0xc0, 0x0f, 0x94, 0xc1, 0x89, 0xc8 };
+    // testb %al, %al instead of test %eax, %eax
+    if (child_type == tCHAR) tmp[2] = 0x84;
+    write_text(tmp, 9);
+    return tCHAR;
   }
 
   // TODO
@@ -1034,7 +1193,7 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
 
 void codegen(ast_node_t *ast)
 {
-  construct_symtab(ast, root_symtab, 0, 0);
+  construct_symtab(ast, root_symtab, NULL, 0, 0);
   // TODO
   ast_node_t *current_child = ast->children;
   while (current_child->type != nSTMT || current_child->variant != vBLOCK)
@@ -1042,7 +1201,10 @@ void codegen(ast_node_t *ast)
   current_child = current_child->children;
   while (current_child != NULL) {
     if (current_child->type == nSTMT && current_child->variant == vEXPR) {
-      codegen_expr(current_child->children, root_symtab);
+      codegen_expr(
+        current_child->children,
+        symtab_get(symtab_get(root_symtab, "_start")->child, "\0")->child
+        );
     }
     current_child = current_child->next;
   }

@@ -45,7 +45,6 @@ typedef struct {
 #define ET_LOPROC 0xff0
 #define ET_HIPROC 0xfff
 
-
 // Program header.
 typedef struct {
   Elf32_Word p_type;
@@ -73,5 +72,27 @@ typedef struct {
 #define PF_X 1
 #define PF_W 2
 #define PF_R 4
+
+// Section header.
+typedef struct {
+  Elf32_Word sh_name;
+  Elf32_Word sh_type;
+  Elf32_Word sh_flags;
+  Elf32_Addr sh_addr;
+  Elf32_Off  sh_offset;
+  Elf32_Word sh_size;
+  Elf32_Word sh_link;
+  Elf32_Word sh_info;
+  Elf32_Word sh_addralign;
+  Elf32_Word sh_entsize;
+} Elf32_Shdr;
+
+// sh_type values
+#define SHT_NONE     0
+#define SHT_PROGBITS 1
+#define SHT_SYMTAB   2
+#define SHT_STRTAB   3
+#define SHT_NOBITS   8
+#define SHT_REL      9
 
 #endif /* _ELF_H_ */
