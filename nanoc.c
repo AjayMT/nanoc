@@ -923,8 +923,7 @@ uint32_t construct_symtab(
       arg_sym.child = NULL;
       arg_sym.parent = out;
       symtab_insert(sym.child, arg_sym);
-      if (arg_sym.type == tCHAR) arg_offset += 1;
-      else arg_offset += 4;
+      arg_offset += 4;
       current_arg = current_arg->next;
     }
 
@@ -994,13 +993,15 @@ uint32_t construct_symtab(
 
 void write_text(uint8_t *b, uint32_t n) {
   if (text == NULL || text_loc + n >= text_cap) {
-    uint32_t size = text_cap ? (2 * text_cap) : 256;
+    uint32_t size = 2 * (text_loc + n);
     text = realloc(text, size);
     text_cap = size;
   }
   memcpy(text + text_loc, b, n);
   text_loc += n;
 }
+
+uint32_t codegen_argument(ast_node_t *arg, symbol_t *symtab);
 
 symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
 {
@@ -1158,7 +1159,16 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
   }
 
   if (expr->variant == vINCREMENT || expr->variant == vDECREMENT) {
-    // TODO actually write value
+    ast_node_t *lval = malloc(sizeof(ast_node_t));
+    memset(lval, 0, sizeof(ast_node_t));
+    lval->type = nEXPR;
+    lval->variant = vADDRESSOF;
+    lval->children = expr->children;
+    codegen_expr(lval, symtab);
+
+    // pushl %eax
+    uint8_t tmp0 = 0x50; write_text(&tmp0, 1);
+
     symbol_type_t child_type = codegen_expr(expr->children, symtab);
     uint8_t tmp[2] = { 0x40, 0 };
     if (expr->variant == vINCREMENT && child_type != tCHAR)
@@ -1168,8 +1178,14 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     } else if (expr->variant == vINCREMENT && child_type == tCHAR) {
       tmp[0] = 0xfe; tmp[1] = 0xc0; write_text(tmp, 2); // incb %al
     } else {
-      tmp[0] = 0xfe; tmp[1] = 0xc8; write_text(tmp, 2);   // decb %al
+      tmp[0] = 0xfe; tmp[1] = 0xc8; write_text(tmp, 2); // decb %al
     }
+
+    // popl %ecx
+    // movl %eax, (%ecx)
+    tmp0 = 0x59; write_text(&tmp0, 1);
+    tmp[0] = 0x89; tmp[1] = 0x01;
+    write_text(tmp, 2);
     return child_type;
   }
 
@@ -1187,8 +1203,178 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     return tCHAR;
   }
 
-  // TODO
+  if (expr->variant == vBIT_NOT) {
+    symbol_type_t child_type = codegen_expr(expr->children, symtab);
+    // notl %eax
+    uint8_t tmp[2] = { 0xf7, 0xd0 };
+    write_text(tmp, 2);
+    return child_type;
+  }
+
+  if (
+    expr->variant == vADD || expr->variant == vSUBTRACT
+    || expr->variant == vMULTIPLY || expr->variant == vDIVIDE
+    || expr->variant == vMODULO || expr->variant == vBIT_AND
+    || expr->variant == vBIT_OR || expr->variant == vBIT_XOR
+    ) {
+    symbol_type_t right_type = codegen_expr(expr->children->next, symtab);
+    // pushl %eax
+    uint8_t tmp = 0x50; write_text(&tmp, 1);
+    symbol_type_t left_type = codegen_expr(expr->children, symtab);
+    // popl %ecx
+    // <op> %ecx, %eax
+    tmp = 0x59; write_text(&tmp, 1);
+    uint8_t tmp1[3] = { 0x01, 0xc8, 0 };
+    uint32_t len = 2;
+    if (expr->variant == vADD) {
+      if (left_type == tCHAR && right_type == tCHAR)
+        tmp1[0] = 0; // addb %cl, %al instead of addl %ecx, %eax
+    } else if (expr->variant == vSUBTRACT) {
+      tmp1[0] = 0x29; // subl/subb %ecx, %eax
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0x28;
+    } else if (expr->variant == vMULTIPLY) {
+      tmp1[0] = 0x0f; tmp1[1] = 0xaf; tmp1[2] = 0xc1; // imull %ecx, %eax
+      len = 3;
+      // TODO figure out how to multiply bytes
+    } else if (expr->variant == vDIVIDE) {
+      tmp1[0] = 0xf7; tmp1[1] = 0xf9; // idivl/idivb %ecx
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0xf6;
+    } else if (expr->variant == vMODULO) {
+      tmp1[0] = 0xf7; tmp1[1] = 0xf9; // idivl/idivb %ecx
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0xf6;
+      write_text(tmp1, 2);
+      tmp1[0] = 0x89; tmp1[1] = 0xd0; // movl/movb %edx, %eax
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0x88;
+    } else if (expr->variant == vBIT_AND) {
+      tmp1[0] = 0x21; tmp1[1] = 0xc8; // andl/andb %ecx, %eax
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0x20;
+    } else if (expr->variant == vBIT_OR) {
+      tmp1[0] = 0x09; tmp1[1] = 0xc8; // orl/orb %ecx, %eax
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0x08;
+    } else if (expr->variant == vBIT_XOR) {
+      tmp1[0] = 0x31; tmp1[1] = 0xc8; // orl/orb %ecx, %eax
+      if (left_type == tCHAR && right_type == tCHAR) tmp1[0] = 0x30;
+    }
+    write_text(tmp1, len);
+    if (left_type == tCHAR) return right_type;
+    return left_type;
+  }
+
+  if (expr->variant == vLT || expr->variant == vGT || expr->variant == vEQUAL) {
+    symbol_type_t right_type = codegen_expr(expr->children->next, symtab);
+    // pushl %eax
+    uint8_t tmp = 0x50; write_text(&tmp, 1);
+    symbol_type_t left_type = codegen_expr(expr->children, symtab);
+    // popl %ecx
+    // cmpl/cmpb %ecx, %eax
+    // setl/setg/sete %al
+    // movzbl %al, %eax
+    uint8_t tmp1[9] = { 0x59, 0x39, 0xc8, 0x0f, 0x9c, 0xc0, 0x0f, 0xb6, 0xc0 };
+    if (left_type == tCHAR && right_type == tCHAR) tmp1[1] = 0x38;
+    if (expr->variant == vGT) tmp1[4] = 0x9f;
+    else if (expr->variant == vEQUAL) tmp1[4] = 0x94;
+    write_text(tmp1, 9);
+    return tINT;
+  }
+
+  if (expr->variant == vAND) {
+    symbol_type_t right_type = codegen_expr(expr->children->next, symtab);
+    // pushl %eax
+    uint8_t tmp = 0x50; write_text(&tmp, 1);
+    symbol_type_t left_type = codegen_expr(expr->children, symtab);
+    // popl %ecx
+    // mull/mulb %ecx
+    // orl %edx, %eax
+    // xorl %ecx, %ecx
+    // cmpl/cmpb %ecx, %eax
+    // setne %al
+    // movzbl %al, %eax
+    uint8_t tmp1[15] = {
+      0x59, 0xf7, 0xe1, 0x09, 0xd0, 0x31, 0xc9, 0x39, 0xc8,
+      0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0
+    };
+    if (left_type == tCHAR && right_type == tCHAR) {
+      tmp1[1] = 0xf7; tmp1[7] = 0x38;
+    }
+    write_text(tmp1, 15);
+    return tINT;
+  }
+
+  if (expr->variant == vOR) {
+    symbol_type_t right_type = codegen_expr(expr->children->next, symtab);
+    // pushl %eax
+    uint8_t tmp = 0x50; write_text(&tmp, 1);
+    symbol_type_t left_type = codegen_expr(expr->children, symtab);
+    // popl %ecx
+    // orl/orb %ecx, %eax
+    // xorl %ecx, %ecx
+    // cmpl/cmpb %ecx, %ax
+    // setne %al
+    // movzbl %al, %eax
+    uint8_t tmp1[13] = {
+      0x59, 0x09, 0xc8, 0x31, 0xc9, 0x39, 0xc8,
+      0x0f, 0x95, 0xc0, 0x0f, 0xb6, 0xc0
+    };
+    if (left_type == tCHAR && right_type == tCHAR) {
+      tmp1[1] = 0x08; tmp1[5] = 0x38;
+    }
+    write_text(tmp1, 13);
+    return tINT;
+  }
+
+  if (expr->variant == vASSIGN) {
+    ast_node_t *lval = malloc(sizeof(ast_node_t));
+    memset(lval, 0, sizeof(ast_node_t));
+    lval->type = nEXPR;
+    lval->variant = vADDRESSOF;
+    lval->children = expr->children;
+    codegen_expr(lval, symtab);
+
+    // pushl %eax
+    uint8_t tmp0 = 0x50; write_text(&tmp0, 1);
+
+    codegen_expr(expr->children->next, symtab);
+
+    // popl %ecx
+    // movl %eax, (%ecx)
+    uint8_t tmp[3] = { 0x59, 0x89, 0x01 };
+    write_text(tmp, 3);
+  }
+
+  if (expr->variant == vCALL) {
+    symbol_type_t callee_type = codegen_expr(expr->children, symtab);
+    // pushl %eax
+    uint8_t tmp0 = 0x50; write_text(&tmp0, 1);
+    uint32_t offset = codegen_argument(expr->children->next, symtab);
+    // popl %eax
+    // calll *%eax
+    uint8_t tmp[3] = { 0x58, 0xff, 0xd0 };
+    write_text(tmp, 3);
+    // addl <offset>, %esp
+    tmp[0] = 0x03; tmp[1] = 0x25;
+    write_text(tmp, 2);
+    for (uint32_t i = 0; i < 4; ++i) {
+      tmp0 = offset & 0xff;
+      write_text(&tmp0, 1);
+      offset >>= 8;
+    }
+    return callee_type;
+  }
+
   return tINT;
+}
+
+uint32_t codegen_argument(ast_node_t *arg, symbol_t *symtab)
+{
+  if (arg == NULL) return 0;
+  uint32_t offset = codegen_argument(arg->next, symtab);
+  codegen_expr(arg, symtab);
+
+  // pushl %eax
+  uint8_t tmp = 0x50;
+  write_text(&tmp, 1);
+
+  return offset;
 }
 
 void codegen(ast_node_t *ast)
