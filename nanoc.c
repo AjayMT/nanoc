@@ -610,7 +610,7 @@ ast_node_t *parse_stmt()
 
     // if the statement is not a block, wrap it in a block
     // simplifies symtab construction and codegen
-    if (if_stmt->type != vBLOCK) {
+    if (if_stmt->variant != vBLOCK) {
       ast_node_t *block = malloc(sizeof(ast_node_t));
       memset(block, 0, sizeof(ast_node_t));
       block->type = nSTMT;
@@ -630,7 +630,7 @@ ast_node_t *parse_stmt()
       else_stmt->variant = vBLOCK;
     }
 
-    if (else_stmt->type != vBLOCK) {
+    if (else_stmt->variant != vBLOCK) {
       ast_node_t *block = malloc(sizeof(ast_node_t));
       memset(block, 0, sizeof(ast_node_t));
       block->type = nSTMT;
@@ -654,7 +654,7 @@ ast_node_t *parse_stmt()
     if (tok.type != RPAREN) goto fail;
     ast_node_t *while_stmt = parse_stmt();
 
-    if (while_stmt->type != vBLOCK) {
+    if (while_stmt->variant != vBLOCK) {
       ast_node_t *block = malloc(sizeof(ast_node_t));
       memset(block, 0, sizeof(ast_node_t));
       block->type = nSTMT;
@@ -857,11 +857,10 @@ symbol_t *symtab_get(symbol_t *tab, char *name)
 {
   if (tab == NULL) return NULL;
   uint32_t idx = hash(name) % SYMTAB_SIZE;
-  symbol_t *parent = NULL;
+  symbol_t *parent = tab[0].parent;
   uint32_t i = idx;
   do {
     if (tab[i].name == NULL) { i = (i + 1) % SYMTAB_SIZE; continue; }
-    else if (tab[i].parent != NULL) parent = tab[i].parent;
     if (strcmp(tab[i].name, name) == 0) return &(tab[i]);
     i = (i + 1) % SYMTAB_SIZE;
   } while (i != idx);
@@ -910,6 +909,7 @@ uint32_t construct_symtab(
     sym.loc_type = lTEXT;
     sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
     memset(sym.child, 0, sizeof(symbol_t) * SYMTAB_SIZE);
+    sym.child[0].parent = out;
 
     ast_node_t *argument_nodes = type_node->next;
     ast_node_t *current_arg = argument_nodes;
@@ -952,13 +952,13 @@ uint32_t construct_symtab(
   }
 
   if (root->variant == vBLOCK) {
-    if (root->children == NULL) return 0;
-
     symbol_t sym;
     sym.name = malloc(2);
     sym.name[0] = block_id % 256;
     sym.name[1] = 0;
     sym.child = malloc(sizeof(symbol_t) * SYMTAB_SIZE);
+    memset(sym.child, 0, sizeof(symbol_t) * SYMTAB_SIZE);
+    sym.child[0].parent = out;
     sym.parent = parent;
     sym.loc_type = lSTACK;
 
@@ -1011,11 +1011,12 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     // for char literal:
     //   movb <imm>, %al
 
-    uint8_t tmp = 0xa0;
-    if (expr->variant == vINT_LITERAL) tmp = 0xa1;
+    uint8_t tmp = 0xb0;
+    uint32_t size = 1;
+    if (expr->variant == vINT_LITERAL) { tmp = 0xb8; size = 4; }
     write_text(&tmp, 1);
     uint32_t imm = expr->i;
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < size; ++i) {
       uint8_t tmp = imm & 0xff;
       write_text(&tmp, 1);
       imm >>= 8;
@@ -1031,18 +1032,25 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
       printf("undefined symbol %s, table %p\n", expr->s, symtab);
       exit(1);
     }
+
     if (sym->loc_type == lSTACK) {
       // movl x(%ebp), %eax
-      uint8_t tmp[3] = { 0x8b, 0x45, sym->loc };
+      uint8_t tmp[2] = { 0x8b, 0x85 };
       if (sym->type == tCHAR) tmp[0] = 0x8a;
-      write_text(tmp, 3);
+      write_text(tmp, 2);
+      uint32_t off = sym->loc;
+      for (uint32_t i = 0; i < 4; ++i) {
+        uint8_t tmp0 = off;
+        write_text(&tmp0, 1);
+        off >>= 8;
+      }
       return sym->type;
     }
 
     // movl addr, %eax
     uint32_t addr = DATA_START + sym->loc;
     if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
-    uint8_t tmp = 0xa1;
+    uint8_t tmp = 0xb8;
     write_text(&tmp, 1);
     for (uint32_t i = 0; i < 4; ++i) {
       uint8_t tmp = addr & 0xff;
@@ -1072,7 +1080,7 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     data_loc += len + 1;
 
     // movl addr, %eax
-    uint8_t tmp = 0xa1;
+    uint8_t tmp = 0xb8;
     write_text(&tmp, 1);
     for (uint32_t i = 0; i < 4; ++i) {
       uint8_t tmp = addr & 0xff;
@@ -1122,8 +1130,8 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
       write_text(tmp, 2);
 
       // addl offset, %eax
-      tmp[0] = 0x03; tmp[1] = 0x05;
-      write_text(tmp, 2);
+      tmp[0] = 0x05;
+      write_text(tmp, 1);
       uint32_t off = sym->loc;
       for (uint32_t i = 0; i < 4; ++i) {
         uint8_t tmp = off & 0xff;
@@ -1141,7 +1149,7 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     // movl addr, %eax
     uint32_t addr = DATA_START + sym->loc;
     if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
-    uint8_t tmp = 0xa1;
+    uint8_t tmp = 0xb8;
     write_text(&tmp, 1);
     for (uint32_t i = 0; i < 4; ++i) {
       uint8_t tmp = addr & 0xff;
@@ -1351,7 +1359,7 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
     uint8_t tmp[3] = { 0x58, 0xff, 0xd0 };
     write_text(tmp, 3);
     // addl <offset>, %esp
-    tmp[0] = 0x03; tmp[1] = 0x25;
+    tmp[0] = 0x81; tmp[1] = 0xc4;
     write_text(tmp, 2);
     for (uint32_t i = 0; i < 4; ++i) {
       tmp0 = offset & 0xff;
@@ -1377,22 +1385,196 @@ uint32_t codegen_argument(ast_node_t *arg, symbol_t *symtab)
   return offset;
 }
 
+void codegen_stmt(
+  ast_node_t *stmt, symbol_t *symtab,
+  uint32_t *block_id, uint32_t *continues, uint32_t *breaks
+  )
+{
+  if (stmt->variant == vEMPTY || stmt->variant == vDECL) return;
+  if (stmt->variant == vEXPR) codegen_expr(stmt->children, symtab);
+
+  if (stmt->variant == vBLOCK) {
+    char symtab_key[2] = { (char) *block_id, 0 };
+    ++(*block_id);
+    symbol_t *child_symtab = symtab_get(symtab, symtab_key)->child;
+    ast_node_t *child = stmt->children;
+    uint32_t child_block_id = 0;
+    while (child != NULL) {
+      codegen_stmt(child, child_symtab, &child_block_id, continues, breaks);
+      child = child->next;
+    }
+  }
+
+  if (stmt->variant == vRETURN) {
+    if (stmt->children != NULL) codegen_expr(stmt->children, symtab);
+    // leave
+    // retl
+    uint8_t tmp[2] = { 0xc9, 0xc3 };
+    write_text(tmp, 2);
+  }
+
+  if (stmt->variant == vCONTINUE || stmt->variant == vBREAK) {
+    if (
+      (stmt->variant == vCONTINUE && continues == NULL)
+      || (stmt->variant == vBREAK && breaks == NULL)
+      ) {
+      printf("Invalid '%s'\n", stmt->variant == vCONTINUE ? "continue" : "break");
+      exit(1);
+    }
+
+    uint32_t *arr = stmt->variant == vCONTINUE ? continues : breaks;
+    uint32_t i = 0;
+    while (arr[i]) ++i;
+    arr[i] = text_loc;
+    text_loc += 5;
+  }
+
+  if (stmt->variant == vIF) {
+    codegen_expr(stmt->children, symtab);
+
+    // cmpl $0, %eax
+    // je else_start
+    // <if block>
+    // jmp else_end
+    // else_start:
+    // <else block>
+    // else_end:
+
+    uint8_t tmp[3] = { 0x83, 0xf8, 0x00 };
+    write_text(tmp, 3);
+
+    uint32_t je_addr = text_loc;
+    text_loc += 6;
+    uint32_t if_start = text_loc;
+    codegen_stmt(stmt->children->next, symtab, block_id, continues, breaks);
+
+    uint32_t jmp_addr = text_loc;
+    text_loc += 5;
+
+    uint32_t else_start = text_loc;
+    codegen_stmt(stmt->children->next->next, symtab, block_id, continues, breaks);
+    uint32_t else_end = text_loc;
+
+    uint32_t je_offset = else_start - if_start;
+    if ((je_offset + 4) < 256) {
+      uint8_t tmp1[6] = { 0x74, (je_offset + 4) & 0xff, 0x90, 0x90, 0x90, 0x90 };
+      memcpy(text + je_addr, tmp1, 6);
+    } else {
+      uint8_t tmp1[6] = { 0x0f, 0x84, 0x00, 0x00, 0x00, 0x00 };
+      for (uint32_t i = 2; i < 6; ++i) {
+        tmp1[i] = je_offset & 0xff;
+        je_offset >>= 8;
+      }
+      memcpy(text + je_addr, tmp1, 6);
+    }
+
+    uint32_t jmp_offset = else_end - else_start;
+    if ((jmp_offset + 3) < 256) {
+      uint8_t tmp2[5] = { 0xeb, (jmp_offset + 3) & 0xff, 0x90, 0x90, 0x90 };
+      memcpy(text + jmp_addr, tmp2, 5);
+    } else {
+      uint8_t tmp2[5] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
+      for (uint32_t i = 1; i < 5; ++i) {
+        tmp2[i] = jmp_offset & 0xff;
+        jmp_offset >>= 8;
+      }
+      memcpy(text + jmp_addr, tmp2, 5);
+    }
+  }
+
+  if (stmt->variant == vWHILE) {
+    uint32_t cond_start = text_loc;
+    codegen_expr(stmt->children, symtab);
+    uint8_t tmp[3] = { 0x83, 0xf8, 0x00 };
+    write_text(tmp, 3);
+
+    uint32_t je_addr = text_loc;
+    text_loc += 6;
+    uint32_t while_start = text_loc;
+
+    uint32_t cs[256]; memset(cs, 0, sizeof(cs));
+    uint32_t bs[256]; memset(bs, 0, sizeof(bs));
+    codegen_stmt(stmt->children->next, symtab, block_id, cs, bs);
+
+    uint32_t jmp_addr = text_loc;
+    text_loc += 5;
+    uint32_t while_end = text_loc;
+
+    uint32_t je_offset = while_end - while_start;
+    if ((je_offset + 4) < 256) {
+      uint8_t tmp1[6] = { 0x74, (je_offset + 4) & 0xff, 0x90, 0x90, 0x90, 0x90 };
+      memcpy(text + je_addr, tmp1, 6);
+    } else {
+      uint8_t tmp1[6] = { 0x0f, 0x84, 0x00, 0x00, 0x00, 0x00 };
+      for (uint32_t i = 2; i < 6; ++i) {
+        tmp1[i] = je_offset & 0xff;
+        je_offset >>= 8;
+      }
+      memcpy(text + je_addr, tmp1, 6);
+    }
+
+    // TODO fix jmp backwards
+    uint32_t jmp_offset = while_end - cond_start;
+    if ((jmp_offset + 3) < 256) {
+      uint8_t tmp2[5] = { 0xeb, (jmp_offset + 3) & 0xff, 0x90, 0x90, 0x90 };
+      memcpy(text + jmp_addr, tmp2, 5);
+    } else {
+      uint8_t tmp2[5] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
+      for (uint32_t i = 1; i < 5; ++i) {
+        tmp2[i] = jmp_offset & 0xff;
+        jmp_offset >>= 8;
+      }
+      memcpy(text + jmp_addr, tmp2, 5);
+    }
+
+    // TODO handle continue and break
+  }
+}
+
 void codegen(ast_node_t *ast)
 {
-  construct_symtab(ast, root_symtab, NULL, 0, 0);
-  // TODO
-  ast_node_t *current_child = ast->children;
-  while (current_child->type != nSTMT || current_child->variant != vBLOCK)
-    current_child = current_child->next;
-  current_child = current_child->children;
-  while (current_child != NULL) {
-    if (current_child->type == nSTMT && current_child->variant == vEXPR) {
-      codegen_expr(
-        current_child->children,
-        symtab_get(symtab_get(root_symtab, "_start")->child, "\0")->child
-        );
+  ast_node_t *current = ast;
+  while (current != NULL) {
+    uint32_t size = construct_symtab(current, root_symtab, NULL, 0, 0);
+
+    if (current->type == nSTMT) {
+      data_loc += size;
+      current = current->next;
+      continue;
     }
-    current_child = current_child->next;
+
+    ast_node_t *current_child = current->children;
+    while (current_child->type != nSTMT) current_child = current_child->next;
+    if (current_child->variant != vBLOCK) {
+      current = current->next; continue;
+    }
+
+    // function preamble:
+    //   pushl %ebp
+    //   movl %esp, %ebp
+    uint8_t tmp[3] = { 0x55, 0x89, 0xe5 };
+    write_text(tmp, 3);
+
+    // subl <stacksize>, %esp
+    tmp[0] = 0x81; tmp[1] = 0xec;
+    write_text(tmp, 2);
+    for (uint32_t i = 0; i < 4; ++i) {
+      uint8_t tmp0 = size;
+      write_text(&tmp0, 1);
+      size >>= 8;
+    }
+
+    symbol_t *symtab = symtab_get(root_symtab, current->s)->child;
+    uint32_t block_id = 0;
+    codegen_stmt(current_child, symtab, &block_id, NULL, NULL);
+
+    // function epilogue:
+    //   leave
+    //   retl
+    tmp[0] = 0xc9; tmp[1] = 0xc3;
+    write_text(tmp, 2);
+
+    current = current->next;
   }
 }
 

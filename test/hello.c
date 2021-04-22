@@ -2,5 +2,13 @@
 void _start()
 {
   int a;
-  _start();
+  if (a) {
+    a = 12;
+  } else {
+    int foo;
+    foo = a;
+  }
+
+  return 1;
 }
+
