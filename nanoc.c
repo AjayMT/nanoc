@@ -1513,13 +1513,13 @@ void codegen_stmt(
       memcpy(text + je_addr, tmp1, 6);
     }
 
-    // TODO fix jmp backwards
     uint32_t jmp_offset = while_end - cond_start;
-    if ((jmp_offset + 3) < 256) {
-      uint8_t tmp2[5] = { 0xeb, (jmp_offset + 3) & 0xff, 0x90, 0x90, 0x90 };
+    if (jmp_offset - 3 < 256) {
+      uint8_t tmp2[5] = { 0xeb, (256 - (jmp_offset - 3)) & 0xff, 0x90, 0x90, 0x90 };
       memcpy(text + jmp_addr, tmp2, 5);
     } else {
       uint8_t tmp2[5] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
+      jmp_offset = -jmp_offset;
       for (uint32_t i = 1; i < 5; ++i) {
         tmp2[i] = jmp_offset & 0xff;
         jmp_offset >>= 8;
@@ -1527,7 +1527,42 @@ void codegen_stmt(
       memcpy(text + jmp_addr, tmp2, 5);
     }
 
-    // TODO handle continue and break
+    // fill in continue statements
+    uint32_t ci = 0;
+    while (cs[ci]) {
+      uint32_t offset = cs[ci] - cond_start;
+      if (offset + 2 < 256) {
+        uint8_t tmp2[5] = { 0xeb, (256 - (offset + 2)) & 0xff, 0x90, 0x90, 0x90 };
+        memcpy(text + cs[ci], tmp2, 5);
+      } else {
+        uint8_t tmp2[5] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
+        offset = -(offset + 5);
+        for (uint32_t i = 1; i < 5; ++i) {
+          tmp2[i] = offset & 0xff;
+          offset >>= 8;
+        }
+        memcpy(text + cs[ci], tmp2, 5);
+      }
+      ++ci;
+    }
+
+    // fill in break statements
+    uint32_t bi = 0;
+    while (bs[bi]) {
+      uint32_t offset = while_end - (bs[bi] + 5);
+      if ((offset + 3) < 256) {
+        uint8_t tmp2[5] = { 0xeb, (offset + 3) & 0xff, 0x90, 0x90, 0x90 };
+        memcpy(text + bs[bi], tmp2, 5);
+      } else {
+        uint8_t tmp2[5] = { 0xe9, 0x00, 0x00, 0x00, 0x00 };
+        for (uint32_t i = 1; i < 5; ++i) {
+          tmp2[i] = offset & 0xff;
+          offset >>= 8;
+        }
+        memcpy(text + bs[bi], tmp2, 5);
+      }
+      ++bi;
+    }
   }
 }
 
@@ -1603,7 +1638,7 @@ void write_elf(FILE *out)
   memset(&text_hdr, 0, sizeof(text_hdr));
   text_hdr.p_type = PT_LOAD;
   text_hdr.p_offset = sizeof(ehdr) + (2*sizeof(Elf32_Phdr)) + data_loc;
-  text_hdr.p_vaddr = 0; // TODO text start vaddr
+  text_hdr.p_vaddr = TEXT_START;
   text_hdr.p_memsz = text_loc;
   text_hdr.p_filesz = text_loc;
   text_hdr.p_flags |= PF_X;
@@ -1612,7 +1647,7 @@ void write_elf(FILE *out)
   memset(&data_hdr, 0, sizeof(data_hdr));
   data_hdr.p_type = PT_LOAD;
   data_hdr.p_offset = sizeof(ehdr) + (2*sizeof(Elf32_Phdr));
-  data_hdr.p_vaddr = 0; // TODO data start vaddr
+  data_hdr.p_vaddr = DATA_START;
   data_hdr.p_memsz = data_loc;
   data_hdr.p_filesz = data_loc;
 
@@ -1639,24 +1674,11 @@ int main(int argc, char *argv[])
   ast_node_t *root = parse();
   codegen(root);
 
-  // testing code
-  /* for (uint32_t i = 0; i < SYMTAB_SIZE; ++i) { */
-  /*   if (root_symtab[i].name == NULL) continue; */
-
-  /*   printf("symbol %s\n", root_symtab[i].name); */
-  /*   if (root_symtab[i].child != NULL) { */
-  /*     symbol_t *child = NULL; */
-  /*     for (uint32_t k = 0; k < SYMTAB_SIZE; ++k) */
-  /*       if (root_symtab[i].child[k].child != NULL) */
-  /*         child = root_symtab[i].child[k].child; */
-  /*     for (uint32_t j = 0; j < SYMTAB_SIZE; ++j) { */
-  /*       if (child[j].name == NULL) continue; */
-
-  /*       if (child[j].name[0] < 'A') child[j].name[0] += 'A'; */
-  /*       printf("child symbol %s loc %d\n", child[j].name, child[j].loc); */
-  /*     } */
-  /*   } */
-  /* } */
+  // temporary thing to have a non-empty data section
+  if (data_loc == 0) {
+    memcpy(data + data_loc, "asdf", 4);
+    data_loc += 4;
+  }
 
   FILE *out = fopen("a.out", "w");
   write_elf(out);

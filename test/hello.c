@@ -1,12 +1,13 @@
 
 void _start()
 {
-  int a;
-  if (a) {
-    a = 12;
-  } else {
-    int foo;
-    foo = a;
+ while (1) {
+    int b;
+    b = 77;
+    continue;
+    ++b;
+    break;
+    --b;
   }
 
   return 1;
