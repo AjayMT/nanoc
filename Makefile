@@ -1,5 +1,6 @@
+
 nanoc: nanoc.c
-	cc -o nanoc nanoc.c
+	$(CC) -o nanoc nanoc.c
  
 .PHONY: clean
 clean:

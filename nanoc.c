@@ -1656,6 +1656,10 @@ void write_elf(FILE *out)
   fwrite(&text_hdr, sizeof(text_hdr), 1, out);
   fwrite(data, data_loc, 1, out);
   fwrite(text, text_loc, 1, out);
+
+#ifdef NANOC_DEBUG
+  printf("text offset for objdumping: %#x\n", text_hdr.p_offset);
+#endif
 }
 
 int main(int argc, char *argv[])
