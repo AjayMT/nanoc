@@ -1350,19 +1350,16 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
   }
 
   if (expr->variant == vCALL) {
-    symbol_type_t callee_type = codegen_expr(expr->children, symtab);
-    // pushl %eax
-    uint8_t tmp0 = 0x50; write_text(&tmp0, 1);
     uint32_t offset = codegen_argument(expr->children->next, symtab);
-    // popl %eax
+    symbol_type_t callee_type = codegen_expr(expr->children, symtab);
     // calll *%eax
-    uint8_t tmp[3] = { 0x58, 0xff, 0xd0 };
-    write_text(tmp, 3);
+    uint8_t tmp[2] = { 0xff, 0xd0 };
+    write_text(tmp, 2);
     // addl <offset>, %esp
     tmp[0] = 0x81; tmp[1] = 0xc4;
     write_text(tmp, 2);
     for (uint32_t i = 0; i < 4; ++i) {
-      tmp0 = offset & 0xff;
+      uint8_t tmp0 = offset & 0xff;
       write_text(&tmp0, 1);
       offset >>= 8;
     }
@@ -1382,7 +1379,7 @@ uint32_t codegen_argument(ast_node_t *arg, symbol_t *symtab)
   uint8_t tmp = 0x50;
   write_text(&tmp, 1);
 
-  return offset;
+  return offset + 4;
 }
 
 void codegen_stmt(
