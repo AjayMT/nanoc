@@ -927,6 +927,9 @@ uint32_t construct_symtab(
       current_arg = current_arg->next;
     }
 
+    if (current_arg->type == nSTMT && current_arg->variant == vEMPTY)
+      sym.loc = -1;
+
     uint32_t stack_size = construct_symtab(current_arg, sym.child, out, 0, 0);
     symtab_insert(out, sym);
     return stack_size;
@@ -991,7 +994,8 @@ uint32_t construct_symtab(
   return 0;
 }
 
-void write_text(uint8_t *b, uint32_t n) {
+void write_text(uint8_t *b, uint32_t n)
+{
   if (text == NULL || text_loc + n >= text_cap) {
     uint32_t size = 2 * (text_loc + n);
     text = realloc(text, size);
@@ -999,6 +1003,29 @@ void write_text(uint8_t *b, uint32_t n) {
   }
   memcpy(text + text_loc, b, n);
   text_loc += n;
+}
+
+typedef enum {
+  rMOV_EAX
+} relocation_type_t;
+
+typedef struct relocation_s {
+  uint32_t addr;
+  char *name;
+  symbol_t *symtab;
+  relocation_type_t type;
+  struct relocation_s *next;
+} relocation_t;
+
+relocation_t *relocs = NULL;
+
+void add_relocation(uint32_t addr, char *name, symbol_t *symtab, relocation_type_t t)
+{
+  relocation_t *r = malloc(sizeof(relocation_t));
+  *r = (relocation_t) {
+    .addr = addr, .name = name, .symtab = symtab, .type = t, .next = relocs
+  };
+  relocs = r;
 }
 
 uint32_t codegen_argument(ast_node_t *arg, symbol_t *symtab);
@@ -1028,9 +1055,13 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
   if (expr->variant == vIDENT) {
     symbol_t *sym = symtab_get(symtab, expr->s);
     if (sym == NULL) {
-      // TODO relocation
-      printf("undefined symbol %s, table %p\n", expr->s, symtab);
+      printf("Undefined symbol %s\n", expr->s);
       exit(1);
+    }
+    if (sym->loc == (uint32_t) -1) {
+      add_relocation(text_loc, expr->s, symtab, rMOV_EAX);
+      text_loc += 5;
+      goto global_ident;
     }
 
     if (sym->loc_type == lSTACK) {
@@ -1058,6 +1089,7 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
       addr >>= 8;
     }
 
+  global_ident:
     // assume all symbols in .text are function pointers
     // so do not dereference
     if (sym->loc_type == lTEXT) return sym->type;
@@ -1119,9 +1151,13 @@ symbol_type_t codegen_expr(ast_node_t *expr, symbol_t *symtab)
 
     symbol_t *sym = symtab_get(symtab, child->s);
     if (sym == NULL) {
-      // TODO relocation
-      printf("undefined symbol %s, table %p\n", expr->s, symtab);
+      printf("Undefined symbol %s\n", expr->s);
       exit(1);
+    }
+    if (sym->loc == (uint32_t) -1) {
+      add_relocation(text_loc, child->s, symtab, rMOV_EAX);
+      text_loc += 5;
+      return sym->type;
     }
 
     if (sym->loc_type == lSTACK) {
@@ -1610,6 +1646,30 @@ void codegen(ast_node_t *ast)
   }
 }
 
+void relocate()
+{
+  relocation_t *current = relocs;
+  while (current != NULL) {
+    symbol_t *sym = symtab_get(current->symtab, current->name);
+    if (sym->loc == (uint32_t) -1) {
+      printf("Undefined symbol %s\n", current->name);
+      exit(1);
+    }
+
+    uint32_t addr = DATA_START + sym->loc;
+    if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+    uint8_t tmp[5];
+    tmp[0] = 0xb8;
+    for (uint32_t i = 1; i < 5; ++i) {
+      tmp[i] = addr & 0xff;
+      addr >>= 8;
+    }
+    memcpy(text + current->addr, tmp, 5);
+
+    current = current->next;
+  }
+}
+
 void write_elf(FILE *out)
 {
   uint32_t entry = TEXT_START;
@@ -1674,6 +1734,7 @@ int main(int argc, char *argv[])
 
   ast_node_t *root = parse();
   codegen(root);
+  relocate();
 
   // temporary thing to have a non-empty data section
   if (data_loc == 0) {
