@@ -1656,15 +1656,17 @@ void relocate()
       exit(1);
     }
 
-    uint32_t addr = DATA_START + sym->loc;
-    if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
-    uint8_t tmp[5];
-    tmp[0] = 0xb8;
-    for (uint32_t i = 1; i < 5; ++i) {
-      tmp[i] = addr & 0xff;
-      addr >>= 8;
+    if (current->type == rMOV_EAX) {
+      uint32_t addr = DATA_START + sym->loc;
+      if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+      uint8_t tmp[5];
+      tmp[0] = 0xb8;
+      for (uint32_t i = 1; i < 5; ++i) {
+        tmp[i] = addr & 0xff;
+        addr >>= 8;
+      }
+      memcpy(text + current->addr, tmp, 5);
     }
-    memcpy(text + current->addr, tmp, 5);
 
     current = current->next;
   }
@@ -1719,6 +1721,50 @@ void write_elf(FILE *out)
 #endif
 }
 
+struct archive_header_s {
+  char ident[16];
+  char mod_time[12];
+  char owner_id[6];
+  char group_id[6];
+  char file_mode[8];
+  char file_len[10];
+  char end[2];
+} __attribute__((packed));
+typedef struct archive_header_s archive_header_t;
+
+void read_elf(uint8_t *buffer, uint32_t len)
+{
+  // TODO add symbols, text, data and relocations
+  char elfmag[7] = { ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3, 1, 1, 1 };
+  if (len < 5 || strncmp((char *)buffer, elfmag, 7) != 0)
+    return;
+
+  Elf32_Header *hdr = (Elf32_Header *)buffer;
+  Elf32_Shdr *symtab_hdr = (Elf32_Shdr *)(buffer + hdr->e_shoff);
+  while (symtab_hdr->sh_type != SHT_SYMTAB) ++symtab_hdr;
+}
+
+void read_archive(char *name)
+{
+  FILE *archive = fopen(name, "r");
+  fseek(archive, 0, SEEK_END);
+  uint32_t len = ftell(archive);
+  fseek(archive, 0, SEEK_SET);
+  uint8_t *buffer = malloc(len);
+  fread(buffer, 1, len, archive);
+
+  if (len < 8 || strncmp((char *)buffer, "!<arch>\n", 8) != 0)
+    return;
+
+  uint32_t idx = 8;
+  while (idx < len) {
+    archive_header_t *header = (archive_header_t *)(buffer + idx);
+    uint32_t file_len = atoi(header->file_len);
+    read_elf(buffer + idx + sizeof(archive_header_t), file_len);
+    idx += file_len + sizeof(archive_header_t);
+  }
+}
+
 int main(int argc, char *argv[])
 {
   if (argc < 2) {
@@ -1734,6 +1780,11 @@ int main(int argc, char *argv[])
 
   ast_node_t *root = parse();
   codegen(root);
+
+  if (argc > 2) {
+    read_archive(argv[2]);
+  }
+
   relocate();
 
   // temporary thing to have a non-empty data section

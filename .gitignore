@@ -1,2 +1,4 @@
 /nanoc
 /a.out
+*.o
+*.a

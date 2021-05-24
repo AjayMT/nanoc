@@ -92,7 +92,14 @@ typedef struct {
 #define SHT_PROGBITS 1
 #define SHT_SYMTAB   2
 #define SHT_STRTAB   3
+#define SHT_RELA     4
 #define SHT_NOBITS   8
 #define SHT_REL      9
+
+// sh_flags values
+#define SHF_WRITE     1
+#define SHF_ALLOC     2
+#define SHF_EXECINSTR 4
+#define SHF_INFO_LINK 0x40
 
 #endif /* _ELF_H_ */
