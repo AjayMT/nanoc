@@ -1,9 +1,10 @@
 
-int b;
+int main(int a, int b, int c)
+{
+  return foo() + a;
+}
 
-void main();
-
-int hello() {
-  main();
-  return b;
+int foo()
+{
+  return 0;
 }

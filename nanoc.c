@@ -1006,7 +1006,7 @@ void write_text(uint8_t *b, uint32_t n)
 }
 
 typedef enum {
-  rMOV_EAX
+  rMOV_EAX, rOFFSET
 } relocation_type_t;
 
 typedef struct relocation_s {
@@ -1665,7 +1665,19 @@ void relocate()
         tmp[i] = addr & 0xff;
         addr >>= 8;
       }
-      memcpy(text + current->addr, tmp, 5);
+      memcpy(text + current->addr, tmp, sizeof(tmp));
+    }
+
+    if (current->type == rOFFSET) {
+      uint32_t addr = DATA_START + sym->loc;
+      if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+      uint32_t offset = addr - (current->addr + TEXT_START) - 4;
+      uint8_t tmp[4];
+      for (uint32_t i = 0; i < 4; ++i) {
+        tmp[i] = offset & 0xff;
+        offset >>= 8;
+      }
+      memcpy(text + current->addr, tmp, sizeof(tmp));
     }
 
     current = current->next;
@@ -1734,14 +1746,72 @@ typedef struct archive_header_s archive_header_t;
 
 void read_elf(uint8_t *buffer, uint32_t len)
 {
-  // TODO add symbols, text, data and relocations
+  // TODO data section stuff
   char elfmag[7] = { ELFMAG0, ELFMAG1, ELFMAG2, ELFMAG3, 1, 1, 1 };
   if (len < 5 || strncmp((char *)buffer, elfmag, 7) != 0)
     return;
 
   Elf32_Header *hdr = (Elf32_Header *)buffer;
-  Elf32_Shdr *symtab_hdr = (Elf32_Shdr *)(buffer + hdr->e_shoff);
-  while (symtab_hdr->sh_type != SHT_SYMTAB) ++symtab_hdr;
+  Elf32_Shdr *shstrtab_hdr =
+    (Elf32_Shdr *)(buffer + hdr->e_shoff + (hdr->e_shstrndx * hdr->e_shentsize));
+  char *shstrtab = (char *)(buffer + shstrtab_hdr->sh_offset);
+
+  Elf32_Shdr *symtab_hdr = NULL, *rel_text_hdr = NULL, *strtab_hdr = NULL;
+  Elf32_Shdr *text_hdr = NULL, *data_hdr = NULL;
+  uint32_t text_idx = 0;
+  for (uint32_t i = 0; i < hdr->e_shnum; ++i) {
+    Elf32_Shdr *current =
+      (Elf32_Shdr *)(buffer + hdr->e_shoff + (hdr->e_shentsize * i));
+    if (strcmp(shstrtab + current->sh_name, ".symtab") == 0) {
+      symtab_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".rel.text") == 0) {
+      rel_text_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".strtab") == 0) {
+      strtab_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".text") == 0) {
+      text_idx = i;
+      text_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".data") == 0) {
+      data_hdr = current; continue;
+    }
+  }
+
+  uint32_t prog_text_offset = text_loc;
+  write_text(buffer + text_hdr->sh_offset, text_hdr->sh_size);
+
+  char *strtab = (char *)(buffer + strtab_hdr->sh_offset);
+  Elf32_Sym *symtab = (Elf32_Sym *)(buffer + symtab_hdr->sh_offset);
+  Elf32_Sym *current = symtab;
+  while ((uintptr_t)current - (uintptr_t)symtab < symtab_hdr->sh_size) {
+    if (current->st_shndx != text_idx) { ++current; continue; }
+    char *name = strtab + current->st_name;
+    symbol_t sym; memset(&sym, 0, sizeof(sym));
+    sym.name = name;
+    sym.type = tINT;
+    sym.loc = prog_text_offset + current->st_value;
+    sym.loc_type = lTEXT;
+    symtab_insert(root_symtab, sym);
+    ++current;
+  }
+
+  Elf32_Rel *rel = (Elf32_Rel *)(buffer + rel_text_hdr->sh_offset);
+  Elf32_Rel *current_rel = rel;
+  while ((uintptr_t)current_rel - (uintptr_t)rel < rel_text_hdr->sh_size) {
+    Elf32_Sym *sym = symtab + ELF32_R_SYM(current_rel->r_info);
+    if (sym->st_shndx != text_idx) {
+      ++current_rel; continue;
+    }
+    add_relocation(
+      prog_text_offset + current_rel->r_offset,
+      strtab + sym->st_name,
+      root_symtab, rOFFSET
+      );
+    ++current_rel;
+  }
 }
 
 void read_archive(char *name)
@@ -1781,15 +1851,13 @@ int main(int argc, char *argv[])
   ast_node_t *root = parse();
   codegen(root);
 
-  if (argc > 2) {
-    read_archive(argv[2]);
-  }
+  if (argc > 2) read_archive(argv[2]);
 
   relocate();
 
   // temporary thing to have a non-empty data section
   if (data_loc == 0) {
-    memcpy(data + data_loc, "asdf", 4);
+    memcpy(data, "asdf", 4);
     data_loc += 4;
   }
 

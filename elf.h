@@ -102,4 +102,42 @@ typedef struct {
 #define SHF_EXECINSTR 4
 #define SHF_INFO_LINK 0x40
 
+// Symbol
+typedef struct {
+  Elf32_Word    st_name;
+  Elf32_Addr    st_value;
+  Elf32_Word    st_size;
+  unsigned char st_info;
+  unsigned char st_other;
+  Elf32_Half    st_shndx;
+} Elf32_Sym;
+
+// Macros to apply to st_info
+#define ELF32_ST_BIND(i)   ((i)>>4)
+#define ELF32_ST_TYPE(i)   ((i)&0xf)
+#define ELF32_ST_INFO(b,t) (((b)<<4)+((t)&0xf))
+
+// ST_BIND values
+#define STB_LOCAL  0
+#define STB_GLOBAL 1
+#define STB_WEAK   2
+
+// ST_TYPE values
+#define STT_NOTYPE  0
+#define STT_OBJECT  1
+#define STT_FUNC    2
+#define STT_SECTION 3
+#define STT_FILE    4
+
+// Relocation entry
+typedef struct {
+  Elf32_Addr r_offset;
+  Elf32_Word r_info;
+} Elf32_Rel;
+
+// Macros to apply to r_info
+#define ELF32_R_SYM(i)    ((i)>>8)
+#define ELF32_R_TYPE(i)   ((unsigned char)(i))
+#define ELF32_R_INFO(s,t) (((s)<<8)+(unsigned char)(t))
+
 #endif /* _ELF_H_ */
