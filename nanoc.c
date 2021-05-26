@@ -1006,7 +1006,7 @@ void write_text(uint8_t *b, uint32_t n)
 }
 
 typedef enum {
-  rMOV_EAX, rOFFSET
+  rMOV_EAX, rOFFSET, rIMM
 } relocation_type_t;
 
 typedef struct relocation_s {
@@ -1656,9 +1656,10 @@ void relocate()
       exit(1);
     }
 
+    uint32_t addr = DATA_START + sym->loc;
+    if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
+
     if (current->type == rMOV_EAX) {
-      uint32_t addr = DATA_START + sym->loc;
-      if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
       uint8_t tmp[5];
       tmp[0] = 0xb8;
       for (uint32_t i = 1; i < 5; ++i) {
@@ -1668,10 +1669,10 @@ void relocate()
       memcpy(text + current->addr, tmp, sizeof(tmp));
     }
 
-    if (current->type == rOFFSET) {
-      uint32_t addr = DATA_START + sym->loc;
-      if (sym->loc_type == lTEXT) addr = TEXT_START + sym->loc;
-      uint32_t offset = addr - (current->addr + TEXT_START) - 4;
+    if (current->type == rOFFSET || current->type == rIMM) {
+      uint32_t offset = addr;
+      if (current->type == rOFFSET)
+        offset = addr - (current->addr + TEXT_START) - 4;
       uint8_t tmp[4];
       for (uint32_t i = 0; i < 4; ++i) {
         tmp[i] = offset & 0xff;
@@ -1805,10 +1806,12 @@ void read_elf(uint8_t *buffer, uint32_t len)
     if (sym->st_shndx != text_idx) {
       ++current_rel; continue;
     }
+    relocation_type_t type = rOFFSET;
+    if (ELF32_R_TYPE(current_rel->r_info) == R_386_32) type = rIMM;
     add_relocation(
       prog_text_offset + current_rel->r_offset,
       strtab + sym->st_name,
-      root_symtab, rOFFSET
+      root_symtab, type
       );
     ++current_rel;
   }

@@ -140,4 +140,8 @@ typedef struct {
 #define ELF32_R_TYPE(i)   ((unsigned char)(i))
 #define ELF32_R_INFO(s,t) (((s)<<8)+(unsigned char)(t))
 
+// R_TYPE values
+#define R_386_32   1
+#define R_386_PC32 2
+
 #endif /* _ELF_H_ */

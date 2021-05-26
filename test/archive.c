@@ -1,7 +1,9 @@
+int foo();
 
 int main(int a, int b, int c)
 {
-  return foo() + a;
+  b = foo() + a;
+  return (int)foo;
 }
 
 int foo()
