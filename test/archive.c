@@ -1,12 +1,8 @@
-int foo();
+
+void _start();
 
 int main(int a, int b, int c)
 {
-  b = foo() + a;
-  return (int)foo;
-}
-
-int foo()
-{
-  return 0;
+  _start();
+  return (int)_start;
 }

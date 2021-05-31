@@ -1758,8 +1758,8 @@ void read_elf(uint8_t *buffer, uint32_t len)
   char *shstrtab = (char *)(buffer + shstrtab_hdr->sh_offset);
 
   Elf32_Shdr *symtab_hdr = NULL, *rel_text_hdr = NULL, *strtab_hdr = NULL;
-  Elf32_Shdr *text_hdr = NULL, *data_hdr = NULL;
-  uint32_t text_idx = 0;
+  Elf32_Shdr *text_hdr = NULL, *data_hdr = NULL, *bss_hdr = NULL, *rodata_hdr = NULL;
+  uint32_t text_idx = 0, data_idx = 0, bss_idx = 0, rodata_idx = 0;
   for (uint32_t i = 0; i < hdr->e_shnum; ++i) {
     Elf32_Shdr *current =
       (Elf32_Shdr *)(buffer + hdr->e_shoff + (hdr->e_shentsize * i));
@@ -1777,7 +1777,16 @@ void read_elf(uint8_t *buffer, uint32_t len)
       text_hdr = current; continue;
     }
     if (strcmp(shstrtab + current->sh_name, ".data") == 0) {
+      data_idx = i;
       data_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".bss") == 0) {
+      bss_idx = i;
+      bss_hdr = current; continue;
+    }
+    if (strcmp(shstrtab + current->sh_name, ".rodata") == 0) {
+      rodata_idx = i;
+      rodata_hdr = current; continue;
     }
   }
 
@@ -1803,9 +1812,6 @@ void read_elf(uint8_t *buffer, uint32_t len)
   Elf32_Rel *current_rel = rel;
   while ((uintptr_t)current_rel - (uintptr_t)rel < rel_text_hdr->sh_size) {
     Elf32_Sym *sym = symtab + ELF32_R_SYM(current_rel->r_info);
-    if (sym->st_shndx != text_idx) {
-      ++current_rel; continue;
-    }
     relocation_type_t type = rOFFSET;
     if (ELF32_R_TYPE(current_rel->r_info) == R_386_32) type = rIMM;
     add_relocation(
