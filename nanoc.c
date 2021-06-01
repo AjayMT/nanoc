@@ -1874,7 +1874,7 @@ void read_archive(char *name)
 int main(int argc, char *argv[])
 {
   if (argc < 2) {
-    printf("Usage: nanoc <filename>\n");
+    printf("Usage: nanoc <filename> [<archive>]\n");
     return 1;
   }
 
