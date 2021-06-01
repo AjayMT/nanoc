@@ -1664,7 +1664,7 @@ void relocate()
   relocation_t *current = relocs;
   while (current != NULL) {
     symbol_t *sym = symtab_get(current->symtab, current->name);
-    if (sym->loc == (uint32_t) -1) {
+    if (sym == NULL || sym->loc == (uint32_t) -1) {
       printf("Undefined symbol %s\n", current->name);
       exit(1);
     }

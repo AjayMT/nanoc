@@ -1,7 +1,7 @@
 
 int main(int a, int b, int c);
 
-int b;
+int foo;
 
 void _start()
 {
