@@ -1,0 +1,6 @@
+- Binary operator parsing:
+  - Assignment operator should bind lower than everything else; currently, `*a = b` is parsed as `*(a = b)`.
+  - Introduce operator precedence or apply operators from left to right.
+- Not all escaped characters inside string or character literals are escaped correctly.
+- The multiplication operator does not handle overflow correctly when multiplying `char`s
+- Documentation and code quality

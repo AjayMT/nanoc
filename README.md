@@ -39,10 +39,7 @@ Most existing "little C compiler" projects output some form of assembly. Because
 
 As of now, nanoc produces very inefficient code. This is not desirable, but I would not sacrifice portability or too much simplicity for code efficiency. It is also a very rudimentary linker -- in particular, the way nanoc combines `.data`, `.rodata` and `.bss` sections and handles global variables is questionable at best and non-functional at worst.
 
-TODOs to be addressed in the short-term:
-- Not all escaped characters inside string or character literals are escaped correctly.
-- The multiplication operator does not handle overflow correctly when multiplying `char`s
-- Documentation and code quality (of course)
+TODO.md lists TODOs to be addressed in the short-term.
 
 ## Build and Usage
 To compile nanoc:
